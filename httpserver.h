@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -13,6 +14,11 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <errno.h> 
+#include <time.h>
+#include <sys/time.h>
+#include <iostream>
+#include <vector>
+using namespace std;
 
 struct webconnect;
 typedef void (*callback_t)(webconnect*);
@@ -20,6 +26,7 @@ typedef void (*callback_t)(webconnect*);
 struct webconnect
 {
     char* querybuf;
+    int last_query_time;
     callback_t handler;
     void *ptr;
     int sockfd;
@@ -45,4 +52,9 @@ int startup(unsigned short port);
 int make_socket_non_blocking(int fd);
  
 int start_http_server(unsigned int port);
+
+void timer_func(int);
+
+int set_http_keepalive_timeout(int sec,int usec);
+
 #endif

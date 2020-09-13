@@ -6,12 +6,19 @@
 #define POLL_SIZE         1024
 #define BUFFER_LENGTH     4096 
 
-
+/*
+ * 超时断开连接，但目前客户端设置的keepalive_timeout比
+ * 当前服务器设置的keepalive_timeout短，如果要测试效果
+ * 请将其调小
+*/
+int keepalive_timeout = 30;//set 30
 
 int epfd = -1;
 
+vector<webconnect*> conn_list;
+
 int workers[WORKER_MAX];
- 
+
 /* 互斥量 */
 pthread_mutex_t *mutex;
 
@@ -49,9 +56,13 @@ pthread_mutex_t *mutex;
 
 void init_webconnect(webconnect* &conn)
 {
+	time_t t;
+	t = time(NULL);
+
 	conn = (webconnect*)malloc(sizeof(webconnect));
 	conn->querybuf = (char*)malloc(1024*1024);
 	conn->handler = empty_callback;
+	conn->last_query_time = time(&t);
 }
 
 void web_accept(webconnect* conn)
@@ -62,7 +73,7 @@ void web_accept(webconnect* conn)
         int sockfd = accept(conn->sockfd, (struct sockaddr *)&client_addr, &client_len);
         if(-1 == sockfd)return;
 	
-	printf("connect....\n");
+	printf("start connect....\n");
 
 
 	make_socket_non_blocking(sockfd);
@@ -78,8 +89,11 @@ void web_accept(webconnect* conn)
 	new_conn->sockfd = sockfd;
 
         event.data.ptr = (void*)new_conn;
-        epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &event);
+        
+	conn_list.push_back(new_conn);
 
+	epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &event);
+	
 }
 
 void read_request(webconnect* conn)
@@ -96,7 +110,15 @@ void read_request(webconnect* conn)
 		
 		if(0 == len)
 	        {
-			printf("******************\n");
+			for(int i=0;i<conn_list.size();i++)
+                	{
+                        	if(conn_list[i] == conn)
+                        	{       
+                                	conn_list.erase(conn_list.begin()+i);
+                                	break;
+                        	}
+                	}
+
         	        epoll_ctl(epfd, EPOLL_CTL_DEL, fd, 0);
                		close_webconnect(conn);
                 	return;
@@ -112,7 +134,7 @@ void read_request(webconnect* conn)
 
 	}
 
-	printf("\n\n%s\n\n",conn->querybuf);	
+	//printf("\n\n%s\n\n",conn->querybuf);	
 }
 
 void send_response(webconnect* conn)
@@ -129,13 +151,36 @@ void send_response(webconnect* conn)
 	int ret = send(conn->sockfd,response,strlen(response),0);
 	if(0 == ret)
         {
+
+		for(int i=0;i<conn_list.size();i++)
+        	{
+                	if(conn_list[i] == conn)
+                       	{
+				conn_list.erase(conn_list.begin()+i);
+				break;
+			}
+        	}
+
                 epoll_ctl(epfd, EPOLL_CTL_DEL, conn->sockfd, 0);
+
                 close_webconnect(conn);
                 return;
 
         }
 
-	printf("\n\n%s\n\n",response);
+	//printf("\n\n%s\n\n",response);
+
+	time_t t;
+	t = time(NULL);
+	conn->last_query_time = time(&t);
+
+	struct tm* lt;
+	lt = localtime(&t);
+	char nowtime[64] = {0};
+	strftime(nowtime,24,"%Y-%m-%d %H:%M:%S",lt);
+
+
+	printf("最后响应时间： %s\n",nowtime);
 }
 
 void empty_callback(webconnect* conn)
@@ -236,7 +281,62 @@ int make_socket_non_blocking(int fd)
  
   return 0;
 }
- 
+
+void timer_func(int nDat)
+{
+	time_t t;
+	t = time(NULL);
+	int now = time(&t);
+
+	struct tm* lt;
+        lt = localtime(&t);
+        char nowtime[64] = {0};
+        strftime(nowtime,24,"%Y-%m-%d %H:%M:%S",lt);
+
+
+	vector<int> rm_index_list;
+
+	for(int i=0;i<conn_list.size();i++)
+	{
+		if(conn_list[i]->last_query_time + keepalive_timeout > now)
+			continue;
+		rm_index_list.push_back(i);
+	}
+
+	for(int i=rm_index_list.size()-1;i>=0;i--)
+	{
+
+		printf("连接销毁时间： %s\n",nowtime);
+
+		int _index = rm_index_list[i];
+		epoll_ctl(epfd, EPOLL_CTL_DEL, conn_list[_index]->sockfd, 0);
+
+                close_webconnect(conn_list[_index]);
+
+		conn_list.erase(conn_list.begin()+_index);
+	}
+	
+}
+
+
+int set_http_keepalive_timeout(int sec,int usec)
+{
+
+	struct itimerval value,ovalue;
+    	signal(SIGALRM,timer_func);
+
+    	value.it_value.tv_sec = sec;
+    	value.it_value.tv_usec = usec;
+    	value.it_interval.tv_sec = sec;
+    	value.it_interval.tv_usec = usec;
+
+    	setitimer(ITIMER_REAL,&value,&ovalue);
+	return 0;
+}
+
+
+
+
 int start_http_server(unsigned int port)
 {
     int listenfd = -1;
@@ -280,6 +380,10 @@ int start_http_server(unsigned int port)
 	srvconn->sockfd = listenfd;
     	ev.data.ptr = (void*)srvconn;
 	epoll_ctl(epfd,EPOLL_CTL_ADD,listenfd,&ev);
+
+	//设置定时器，销毁长时间不用的连接
+	set_http_keepalive_timeout(10,0);
+
 	while(1)
 	{
 		int n;
