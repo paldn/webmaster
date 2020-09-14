@@ -244,7 +244,7 @@ int startup(unsigned short port)
         return 0;
     }
 
-    setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
+    setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &value, sizeof(value));
     
     //绑定套接字
     if (bind(listenFd, (struct sockaddr *)&servAddr, sizeof(servAddr))) {
