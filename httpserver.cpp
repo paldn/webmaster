@@ -243,7 +243,7 @@ int startup(unsigned short port)
         printf("create socket error: %s(errno: %d)\n",strerror(errno),errno);
         return 0;
     }
-    
+
     setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value));
     
     //绑定套接字
